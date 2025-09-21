@@ -1,0 +1,16 @@
+@import "tailwindcss";
+
+@media print {
+    body {
+        background: #fff !important;
+    }
+
+    .print\:p-0 {
+        padding: 0 !important;
+    }
+
+    /* Sembunyikan elemen yang tidak ingin dicetak, misal navbar/footer */
+    .no-print {
+        display: none !important;
+    }
+}
