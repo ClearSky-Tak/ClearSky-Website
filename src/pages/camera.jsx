@@ -2,25 +2,66 @@ import React, { useRef, useState, useEffect } from 'react';
 // import jsPDF from 'jspdf';
 // import autoTable from 'jspdf-autotable';
 import { useNavigate } from 'react-router-dom';
+import LocationCard from '../components/card/LocationCard.jsx';
+import WeatherCard from '../components/card/weatherCard.jsx';
 
 export default function Camera() {
     const videoRef = useRef(null);
     const canvasRef = useRef(null);
-    const [result, setResult] = useState({
+    const [result] = useState({
         langit: 'benar', // atau 'bukan'
         keadaan: 'cerah', // atau 'mendung', 'hujan'
         kemungkinanHujan: 20, // persen
     });
+    const [location, setLocation] = useState({ lat: null, lng: null, address: '' });
+    // Responsive flags
+    const [isMobile, setIsMobile] = useState(false);
+    const [isDesktop, setIsDesktop] = useState(true);
     const navigate = useNavigate();
 
     // Mulai kamera saat komponen mount
     useEffect(() => {
+        // Start camera
         if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
             navigator.mediaDevices.getUserMedia({ video: true }).then(stream => {
                 videoRef.current.srcObject = stream;
                 videoRef.current.play();
             });
         }
+        // Setup responsive flags using Tailwind's md breakpoint (~768px)
+        const updateBP = () => {
+            const w = window.innerWidth;
+            const mobile = w < 768;
+            setIsMobile(mobile);
+            setIsDesktop(!mobile);
+        };
+        updateBP();
+        window.addEventListener('resize', updateBP);
+        
+        // Get geolocation
+        if (navigator.geolocation) {
+            navigator.geolocation.getCurrentPosition(
+                (pos) => {
+                    const { latitude, longitude } = pos.coords;
+                    setLocation((prev) => ({ ...prev, lat: latitude, lng: longitude }));
+                    // Try simple reverse geocode via OpenStreetMap Nominatim (no key). Fallback to coords if blocked.
+                    fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${latitude}&lon=${longitude}`)
+                        .then((r) => r.json())
+                        .then((data) => {
+                            const addr = data?.display_name;
+                            if (addr) setLocation((prev) => ({ ...prev, address: addr }));
+                        })
+                        .catch(() => { /* ignore errors, keep coords */ });
+                },
+                () => {
+                    // Geolocation denied -> leave null
+                },
+                { enableHighAccuracy: true, timeout: 10000 }
+            );
+        }
+        return () => {
+            window.removeEventListener('resize', updateBP);
+        };
     }, []);
 
     // Fungsi untuk capture frame dari video
@@ -47,6 +88,13 @@ export default function Camera() {
 
     return (
         <div className="container mx-auto px-4 py-8">
+            {/* On mobile: show Location & Weather above camera */}
+            {isMobile && (
+                <div className="w-full grid grid-cols-1 gap-4 mb-4">
+                    <LocationCard lat={location.lat} lng={location.lng} address={location.address} />
+                    <WeatherCard lat={location.lat} lng={location.lng} />
+                </div>
+            )}
             <div className="flex flex-col md:flex-row gap-8">
                 {/* Area Kamera */}
                 <div className="md:w-1/2 flex flex-col items-center">
@@ -56,8 +104,16 @@ export default function Camera() {
                 </div>
 
                 {/* Area Hasil Deteksi */}
-                <div className="md:w-1/2 flex flex-col items-center justify-center my-auto">
-                    <h2 className="text-xl font-bold mb-4">Hasil Deteksi</h2>
+                <div className="md:w-1/2 flex flex-col items-center justify-start gap-4">
+                    {/* Desktop/Tablet: show Location & Weather at top of right column */}
+                    {isDesktop && (
+                        <div className="w-full grid grid-cols-1 md:grid-cols-2 gap-4">
+                            <LocationCard lat={location.lat} lng={location.lng} address={location.address} />
+                            <WeatherCard lat={location.lat} lng={location.lng} />
+                        </div>
+                    )}
+
+                    <h2 className="text-xl font-bold mt-2">Hasil Deteksi</h2>
                     <div className="flex justify-center w-full mb-10">
                         <table className="w-full max-w-xl border-collapse rounded-lg overflow-hidden shadow-lg bg-white">
                             <thead>
