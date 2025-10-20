@@ -18,20 +18,68 @@ export default function Camera() {
     // Responsive flags
     const [isMobile, setIsMobile] = useState(false);
     const [isDesktop, setIsDesktop] = useState(true);
+    // Camera devices and selection
+    const [devices, setDevices] = useState([]); // list of videoinput devices
+    const [selectedDeviceId, setSelectedDeviceId] = useState(''); // desktop selection
+    const [facing, setFacing] = useState('environment'); // mobile: 'user' | 'environment'
     const navigate = useNavigate();
 
-    // Mulai kamera saat komponen mount
-    useEffect(() => {
-        // Start camera
-        if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
-            navigator.mediaDevices.getUserMedia({ video: true }).then(stream => {
+    // Helper: stop current video stream
+    const stopStream = () => {
+        const v = videoRef.current;
+        const stream = v && v.srcObject;
+        if (stream && typeof stream.getTracks === 'function') {
+            stream.getTracks().forEach(t => t.stop());
+        }
+        if (v) v.srcObject = null;
+    };
+
+    // Helper: (re)start stream with constraints
+    const startStream = async ({ deviceId, facingMode } = {}) => {
+        try {
+            stopStream();
+            const base = { audio: false };
+            let video;
+            if (deviceId) {
+                video = { deviceId: { exact: deviceId } };
+            } else if (facingMode) {
+                video = { facingMode: { ideal: facingMode } };
+            } else {
+                video = true;
+            }
+            const stream = await navigator.mediaDevices.getUserMedia({ ...base, video });
+            if (videoRef.current) {
+                videoRef.current.srcObject = stream;
+                await videoRef.current.play().catch(() => {});
+            }
+            // update devices list (labels require permission)
+            const list = await navigator.mediaDevices.enumerateDevices();
+            const vids = list.filter(d => d.kind === 'videoinput');
+            setDevices(vids);
+            // set selected device id based on active track
+            const track = stream.getVideoTracks()[0];
+            const settings = track.getSettings?.() || {};
+            if (settings.deviceId) setSelectedDeviceId(settings.deviceId);
+        } catch {
+            // fallback attempts
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
                 if (videoRef.current) {
                     videoRef.current.srcObject = stream;
-                    videoRef.current.play().catch(() => {});
+                    await videoRef.current.play().catch(() => {});
                 }
-            }).catch(() => {});
+                const list = await navigator.mediaDevices.enumerateDevices();
+                const vids = list.filter(d => d.kind === 'videoinput');
+                setDevices(vids);
+                const track = stream.getVideoTracks()[0];
+                const settings = track.getSettings?.() || {};
+                if (settings.deviceId) setSelectedDeviceId(settings.deviceId);
+            } catch { /* ignore */ }
         }
-        // Setup responsive flags using Tailwind's md breakpoint (~768px)
+    };
+
+    // Setup breakpoints and geolocation once
+    useEffect(() => {
         const updateBP = () => {
             const w = window.innerWidth;
             const mobile = w < 768;
@@ -40,22 +88,18 @@ export default function Camera() {
         };
         updateBP();
         window.addEventListener('resize', updateBP);
-        
-        // Get geolocation
         if (navigator.geolocation) {
             navigator.geolocation.getCurrentPosition(
                 (pos) => {
                     const { latitude, longitude } = pos.coords;
                     setLocation((prev) => ({ ...prev, lat: latitude, lng: longitude }));
-                    // Try simple reverse geocode via OpenStreetMap Nominatim (no key). Fallback to coords if blocked.
                     fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${latitude}&lon=${longitude}`)
                         .then((r) => r.json())
                         .then((data) => {
                             const addr = data?.display_name;
                             if (addr) setLocation((prev) => ({ ...prev, address: addr }));
                         })
-                        .catch(() => { /* ignore errors, keep coords */ });
-                    // Fetch weather by coords
+                        .catch(() => {});
                     const apiKey = import.meta.env.VITE_OPENWEATHER_API_KEY;
                     if (apiKey) {
                         fetch(`https://api.openweathermap.org/data/2.5/weather?lat=${latitude}&lon=${longitude}&appid=${apiKey}&units=metric&lang=id`)
@@ -64,9 +108,7 @@ export default function Camera() {
                             .catch(() => {});
                     }
                 },
-                () => {
-                    // Geolocation denied -> leave null
-                },
+                () => {},
                 { enableHighAccuracy: true, timeout: 10000 }
             );
         }
@@ -74,6 +116,23 @@ export default function Camera() {
             window.removeEventListener('resize', updateBP);
         };
     }, []);
+
+    // Start/refresh camera stream when deviceId or facing/mobile changes
+    useEffect(() => {
+        if (!navigator.mediaDevices?.getUserMedia) return;
+        if (isDesktop && selectedDeviceId) {
+            startStream({ deviceId: selectedDeviceId });
+            return () => { stopStream(); };
+        }
+        if (isMobile) {
+            startStream({ facingMode: facing });
+            return () => { stopStream(); };
+        }
+        // default
+        startStream({});
+        return () => { stopStream(); };
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [isMobile, isDesktop, selectedDeviceId, facing]);
 
     // (old helper removed)
 
@@ -167,6 +226,28 @@ export default function Camera() {
         setFileImage(f);
     };
 
+    // Handlers for desktop dropdown and mobile flip
+    const onSelectDevice = async (e) => {
+        const id = e.target.value;
+        setSelectedDeviceId(id);
+        await startStream({ deviceId: id });
+    };
+    const onFlip = async () => {
+        const next = facing === 'environment' ? 'user' : 'environment';
+        setFacing(next);
+        // Try facingMode. If not honored, choose device by label keyword if available
+        if (devices.length > 0) {
+            const target = devices.find(d => d.label.toLowerCase().includes(next === 'environment' ? 'back' : 'front'))
+                || devices.find(d => d.label.toLowerCase().includes(next === 'environment' ? 'rear' : 'user'));
+            if (target) {
+                setSelectedDeviceId(target.deviceId);
+                await startStream({ deviceId: target.deviceId });
+                return;
+            }
+        }
+        await startStream({ facingMode: next });
+    };
+
     return (
         <div className="container mx-auto px-4 py-8">
             {/* On mobile: show Location & Weather above camera */}
@@ -180,6 +261,23 @@ export default function Camera() {
                 {/* Area Kamera */}
                 <div className="md:w-1/2 flex flex-col items-center">
                     <h2 className="text-xl font-bold mb-4">Area Kamera</h2>
+                    {/* Desktop: camera dropdown */}
+                    {isDesktop && (
+                        <div className="w-full max-w-md mb-3 flex items-center gap-2">
+                            <label className="font-medium">Kamera:</label>
+                            <select value={selectedDeviceId} onChange={onSelectDevice} className="select select-bordered w-full">
+                                {devices.map(d => (
+                                    <option key={d.deviceId} value={d.deviceId}>{d.label || `Kamera ${d.deviceId.slice(0,6)}`}</option>
+                                ))}
+                            </select>
+                        </div>
+                    )}
+                    {/* Mobile: flip camera */}
+                    {isMobile && (
+                        <div className="w-full max-w-md mb-3 flex justify-end">
+                            <button onClick={onFlip} className="btn btn-primary mx-auto">Flip Camera ({facing === 'environment' ? 'Belakang' : 'Depan'})</button>
+                        </div>
+                    )}
                     <video ref={videoRef} className="w-full rounded shadow mb-4" autoPlay />
                     <canvas ref={canvasRef} style={{ display: 'none' }} />
                     <input type="file" accept="image/*" onChange={onFileChange} className="file-input file-input-bordered w-full max-w-md" />
