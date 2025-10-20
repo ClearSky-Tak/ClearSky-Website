@@ -1,18 +1,34 @@
 import * as tf from '@tensorflow/tfjs';
 
-// Paths for assets (served by Vite dev server)
-const MODEL_URL = '/src/assets/Model/model.json';
-const LABELS_URL = '/src/assets/Model/labels.json';
-const SCALER_URL = '/src/assets/Model/scaler.json';
+// Prefer assets from public folder so they are served at /assets/Model/*
+const PUB_MODEL_URL = '/assets/Model/model.json';
+const PUB_LABELS_URL = '/assets/Model/labels.json';
+const PUB_SCALER_URL = '/assets/Model/scaler.json';
+// Fallback to src path (dev only) if public path is unavailable
+const SRC_MODEL_URL = '/src/assets/Model/model.json';
+const SRC_LABELS_URL = '/src/assets/Model/labels.json';
+const SRC_SCALER_URL = '/src/assets/Model/scaler.json';
 
 let graphModelPromise;
 let labelsPromise;
 let scalerPromise;
 
+async function tryFetchJson(url) {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error('HTTP ' + res.status);
+  return res.json();
+}
+
 export async function loadArtifactsGraph() {
-  if (!graphModelPromise) graphModelPromise = tf.loadGraphModel(MODEL_URL);
-  if (!labelsPromise) labelsPromise = fetch(LABELS_URL).then(r => r.json());
-  if (!scalerPromise) scalerPromise = fetch(SCALER_URL).then(r => r.json());
+  if (!graphModelPromise) {
+    graphModelPromise = tf.loadGraphModel(PUB_MODEL_URL).catch(() => tf.loadGraphModel(SRC_MODEL_URL));
+  }
+  if (!labelsPromise) {
+    labelsPromise = tryFetchJson(PUB_LABELS_URL).catch(() => tryFetchJson(SRC_LABELS_URL));
+  }
+  if (!scalerPromise) {
+    scalerPromise = tryFetchJson(PUB_SCALER_URL).catch(() => tryFetchJson(SRC_SCALER_URL));
+  }
   const [model, labels, scaler] = await Promise.all([graphModelPromise, labelsPromise, scalerPromise]);
   return { model, labels, scaler };
 }
