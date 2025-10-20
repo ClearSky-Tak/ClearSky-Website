@@ -4,7 +4,8 @@ import { useLocation, NavLink } from 'react-router-dom';
 export default function Report() {
   const { state } = useLocation();
   const imgData = state?.imgData;
-  const result = state?.result || { langit: '', keadaan: '', kemungkinanHujan: '' };
+  const result = state?.result || { cerah: null, berawan: null, hujan: null };
+  const history = state?.history || [];
 
   return (
     <div className="bg-white p-8 print:p-0 min-h-screen font-sans">
@@ -44,29 +45,56 @@ export default function Report() {
         <table className="w-full max-w-xl border-collapse rounded-lg overflow-hidden shadow-lg bg-white">
           <thead>
             <tr className="bg-blue-600 text-white">
-              <th className="py-3 px-4 text-lg font-semibold">Hasil</th>
-              <th className="py-3 px-4 text-lg font-semibold">Nilai</th>
+              <th className="py-3 px-4 text-lg font-semibold">Kelas</th>
+              <th className="py-3 px-4 text-lg font-semibold">Persentase</th>
             </tr>
           </thead>
           <tbody>
             <tr className="bg-gray-50">
-              <td className="py-2 px-4 font-semibold">Langit</td>
-              <td className="py-2 px-4">
-                <span className={`px-3 py-1 rounded text-white text-sm font-bold ${result.langit === 'benar' ? 'bg-green-500' : 'bg-red-500'}`}>
-                  {result.langit === 'benar' ? 'Benar' : 'Bukan'}
-                </span>
-              </td>
+              <td className="py-2 px-4 font-semibold">Cerah</td>
+              <td className="py-2 px-4">{result.cerah ?? '-'}%</td>
             </tr>
             <tr>
-              <td className="py-2 px-4 font-semibold">Keadaan</td>
-              <td className="py-2 px-4">{result.keadaan}</td>
+              <td className="py-2 px-4 font-semibold">Berawan</td>
+              <td className="py-2 px-4">{result.berawan ?? '-'}%</td>
             </tr>
             <tr className="bg-gray-50">
-              <td className="py-2 px-4 font-semibold">Kemungkinan Hujan</td>
-              <td className="py-2 px-4">{result.kemungkinanHujan}%</td>
+              <td className="py-2 px-4 font-semibold">Hujan</td>
+              <td className="py-2 px-4">{result.hujan ?? '-'}%</td>
             </tr>
           </tbody>
         </table>
+      </div>
+
+      {/* Riwayat Tiap Menit */}
+      <div className="flex justify-center mt-8">
+        <div className="w-full max-w-2xl">
+          <h3 className="text-lg font-semibold mb-2">Riwayat Tiap Menit</h3>
+          <table className="w-full border-collapse rounded-lg overflow-hidden shadow bg-white">
+            <thead>
+              <tr className="bg-gray-200 text-gray-800">
+                <th className="py-2 px-3 text-left">Waktu</th>
+                <th className="py-2 px-3 text-left">Cerah</th>
+                <th className="py-2 px-3 text-left">Berawan</th>
+                <th className="py-2 px-3 text-left">Hujan</th>
+              </tr>
+            </thead>
+            <tbody>
+              {history.length === 0 ? (
+                <tr><td colSpan="4" className="py-3 px-3 text-center opacity-60">Belum ada riwayat</td></tr>
+              ) : (
+                history.map((h, i) => (
+                  <tr key={i} className={i % 2 ? 'bg-gray-50' : ''}>
+                    <td className="py-2 px-3">{h.time}</td>
+                    <td className="py-2 px-3">{h.cerah}%</td>
+                    <td className="py-2 px-3">{h.berawan}%</td>
+                    <td className="py-2 px-3">{h.hujan}%</td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
       </div>
 
       {/* Print Button */}

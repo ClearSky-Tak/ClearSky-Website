@@ -4,15 +4,16 @@ import React, { useRef, useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import LocationCard from '../components/card/LocationCard.jsx';
 import WeatherCard from '../components/card/weatherCard.jsx';
+import { predictFromModel } from '../utils/predict.js';
 
 export default function Camera() {
     const videoRef = useRef(null);
     const canvasRef = useRef(null);
-    const [result] = useState({
-        langit: 'benar', // atau 'bukan'
-        keadaan: 'cerah', // atau 'mendung', 'hujan'
-        kemungkinanHujan: 20, // persen
-    });
+    const [result, setResult] = useState({ cerah: null, berawan: null, hujan: null, top: '' });
+    const [history, setHistory] = useState([]); // {time, cerah, berawan, hujan}
+    const [loading, setLoading] = useState(false);
+    const [fileImage, setFileImage] = useState(null);
+    const [weather, setWeather] = useState(null);
     const [location, setLocation] = useState({ lat: null, lng: null, address: '' });
     // Responsive flags
     const [isMobile, setIsMobile] = useState(false);
@@ -24,9 +25,11 @@ export default function Camera() {
         // Start camera
         if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
             navigator.mediaDevices.getUserMedia({ video: true }).then(stream => {
-                videoRef.current.srcObject = stream;
-                videoRef.current.play();
-            });
+                if (videoRef.current) {
+                    videoRef.current.srcObject = stream;
+                    videoRef.current.play().catch(() => {});
+                }
+            }).catch(() => {});
         }
         // Setup responsive flags using Tailwind's md breakpoint (~768px)
         const updateBP = () => {
@@ -52,6 +55,14 @@ export default function Camera() {
                             if (addr) setLocation((prev) => ({ ...prev, address: addr }));
                         })
                         .catch(() => { /* ignore errors, keep coords */ });
+                    // Fetch weather by coords
+                    const apiKey = import.meta.env.VITE_OPENWEATHER_API_KEY;
+                    if (apiKey) {
+                        fetch(`https://api.openweathermap.org/data/2.5/weather?lat=${latitude}&lon=${longitude}&appid=${apiKey}&units=metric&lang=id`)
+                            .then(res => res.json())
+                            .then(setWeather)
+                            .catch(() => {});
+                    }
                 },
                 () => {
                     // Geolocation denied -> leave null
@@ -64,10 +75,13 @@ export default function Camera() {
         };
     }, []);
 
-    // Fungsi untuk capture frame dari video
-    const getCurrentFrame = () => {
+    // (old helper removed)
+
+    // Capture current frame as DataURL for model input
+    const captureDataURL = () => {
         const video = videoRef.current;
         const canvas = canvasRef.current;
+        if (!video || !canvas || !video.videoWidth) return null;
         canvas.width = video.videoWidth;
         canvas.height = video.videoHeight;
         const ctx = canvas.getContext('2d');
@@ -75,15 +89,82 @@ export default function Camera() {
         return canvas.toDataURL('image/png');
     };
 
+    // Predict loop: every ~2s attempt, with 5s timeout+retry while loading
+    useEffect(() => {
+        if (!weather) return;
+        let intervalId;
+        let inFlight = false;
+        const predictTick = async () => {
+            if (inFlight) return;
+            inFlight = true;
+            setLoading(true);
+            const controller = new AbortController();
+            const timeout = setTimeout(() => controller.abort(), 5000);
+            try {
+                const date = new Date();
+                const dataUrl = fileImage ? null : captureDataURL();
+                const args = fileImage ? { file: fileImage } : { dataUrl };
+                const pred = await predictFromModel({ weather, date, ...args });
+                const labels = pred.labels || { '0': 'Cerah', '1': 'Berawan', '2': 'Hujan' };
+                // Try to map to indices 0/1/2; fallback by matching label text
+                const toPct = (idxOrName) => {
+                    if (typeof idxOrName === 'number') return Math.round((pred.probs?.[idxOrName] ?? 0) * 100);
+                    const index = Object.values(labels).findIndex(l => String(l).toLowerCase().includes(idxOrName));
+                    return Math.round((pred.probs?.[index] ?? 0) * 100);
+                };
+                const cerah = toPct(0) || toPct('cerah');
+                const berawan = toPct(1) || toPct('awan');
+                const hujan = toPct(2) || toPct('hujan');
+                setResult({ cerah, berawan, hujan, top: pred.label });
+                // Append history each minute (when seconds roll over near 0)
+                if (date.getSeconds() < 2) {
+                    setHistory((h) => [...h, { time: date.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }), cerah, berawan, hujan }].slice(-120));
+                }
+            } catch {
+                // If failed or timed out, try one immediate retry with a fresh frame
+                try {
+                    const date = new Date();
+                    const dataUrl = fileImage ? null : captureDataURL();
+                    const args = fileImage ? { file: fileImage } : { dataUrl };
+                    const pred = await predictFromModel({ weather, date, ...args });
+                    const labels = pred.labels || { '0': 'Cerah', '1': 'Berawan', '2': 'Hujan' };
+                    const toPct = (idxOrName) => {
+                        if (typeof idxOrName === 'number') return Math.round((pred.probs?.[idxOrName] ?? 0) * 100);
+                        const index = Object.values(labels).findIndex(l => String(l).toLowerCase().includes(idxOrName));
+                        return Math.round((pred.probs?.[index] ?? 0) * 100);
+                    };
+                    const cerah = toPct(0) || toPct('cerah');
+                    const berawan = toPct(1) || toPct('awan');
+                    const hujan = toPct(2) || toPct('hujan');
+                    setResult({ cerah, berawan, hujan, top: pred.label });
+                } catch { /* ignore */ }
+            } finally {
+                clearTimeout(timeout);
+                setLoading(false);
+                inFlight = false;
+            }
+        };
+        intervalId = setInterval(predictTick, 2000);
+        return () => clearInterval(intervalId);
+    }, [weather, fileImage]);
+
     // Fungsi untuk membuat dan mendownload PDF
     const handleReport = () => {
-        const imgData = getCurrentFrame();
+        const imgData = captureDataURL();
         navigate('/report', {
             state: {
                 imgData,
-                result
+                result,
+                history,
             }
         });
+    };
+
+    const onFileChange = (e) => {
+        const f = e.target.files?.[0];
+        if (!f) { setFileImage(null); return; }
+        if (!f.type.startsWith('image/')) { alert('Hanya file gambar yang diperbolehkan'); return; }
+        setFileImage(f);
     };
 
     return (
@@ -92,7 +173,7 @@ export default function Camera() {
             {isMobile && (
                 <div className="w-full grid grid-cols-1 gap-4 mb-4">
                     <LocationCard lat={location.lat} lng={location.lng} address={location.address} />
-                    <WeatherCard lat={location.lat} lng={location.lng} />
+                        <WeatherCard lat={location.lat} lng={location.lng} />
                 </div>
             )}
             <div className="flex flex-col md:flex-row gap-8">
@@ -101,6 +182,7 @@ export default function Camera() {
                     <h2 className="text-xl font-bold mb-4">Area Kamera</h2>
                     <video ref={videoRef} className="w-full rounded shadow mb-4" autoPlay />
                     <canvas ref={canvasRef} style={{ display: 'none' }} />
+                    <input type="file" accept="image/*" onChange={onFileChange} className="file-input file-input-bordered w-full max-w-md" />
                 </div>
 
                 {/* Area Hasil Deteksi */}
@@ -118,29 +200,73 @@ export default function Camera() {
                         <table className="w-full max-w-xl border-collapse rounded-lg overflow-hidden shadow-lg bg-white">
                             <thead>
                                 <tr className="bg-blue-600 text-white">
-                                    <th className="py-3 px-4 text-lg font-semibold">Hasil</th>
-                                    <th className="py-3 px-4 text-lg font-semibold">Nilai</th>
+                                    <th className="py-3 px-4 text-lg font-semibold">Kelas</th>
+                                    <th className="py-3 px-4 text-lg font-semibold">Persentase</th>
                                 </tr>
                             </thead>
                             <tbody>
-                                <tr className="bg-gray-50">
-                                    <td className="py-2 px-4 font-semibold">Langit</td>
+                                <tr>
+                                    <td className="py-2 px-4 font-semibold">Cerah</td>
                                     <td className="py-2 px-4">
-                                        <span className={`px-3 py-1 rounded text-white text-sm font-bold ${result.langit === 'benar' ? 'bg-green-500' : 'bg-red-500'}`}>
-                                            {result.langit === 'benar' ? 'Benar' : 'Bukan'}
-                                        </span>
+                                        {loading || result.cerah === null ? (
+                                            <span className="loading loading-dots loading-md"></span>
+                                        ) : (
+                                            `${result.cerah}%`
+                                        )}
+                                    </td>
+                                </tr>
+                                <tr className="bg-gray-50">
+                                    <td className="py-2 px-4 font-semibold">Berawan</td>
+                                    <td className="py-2 px-4">
+                                        {loading || result.berawan === null ? (
+                                            <span className="loading loading-dots loading-md"></span>
+                                        ) : (
+                                            `${result.berawan}%`
+                                        )}
                                     </td>
                                 </tr>
                                 <tr>
-                                    <td className="py-2 px-4 font-semibold">Keadaan</td>
-                                    <td className="py-2 px-4">{result.keadaan}</td>
-                                </tr>
-                                <tr className="bg-gray-50">
-                                    <td className="py-2 px-4 font-semibold">Kemungkinan Hujan</td>
-                                    <td className="py-2 px-4">{result.kemungkinanHujan}%</td>
+                                    <td className="py-2 px-4 font-semibold">Hujan</td>
+                                    <td className="py-2 px-4">
+                                        {loading || result.hujan === null ? (
+                                            <span className="loading loading-dots loading-md"></span>
+                                        ) : (
+                                            `${result.hujan}%`
+                                        )}
+                                    </td>
                                 </tr>
                             </tbody>
                         </table>
+                    </div>
+                    {/* History per menit */}
+                    <div className="w-full max-w-xl">
+                        <h3 className="font-semibold mb-2">Riwayat Tiap Menit</h3>
+                        <div className="overflow-x-auto">
+                            <table className="w-full border-collapse rounded-lg overflow-hidden shadow bg-white">
+                                <thead>
+                                    <tr className="bg-gray-200 text-gray-800">
+                                        <th className="py-2 px-3 text-left">Waktu</th>
+                                        <th className="py-2 px-3 text-left">Cerah</th>
+                                        <th className="py-2 px-3 text-left">Berawan</th>
+                                        <th className="py-2 px-3 text-left">Hujan</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {history.length === 0 ? (
+                                        <tr><td colSpan="4" className="py-3 px-3 text-center opacity-60">Belum ada riwayat</td></tr>
+                                    ) : (
+                                        history.map((h, i) => (
+                                            <tr key={i} className={i % 2 ? 'bg-gray-50' : ''}>
+                                                <td className="py-2 px-3">{h.time}</td>
+                                                <td className="py-2 px-3">{h.cerah}%</td>
+                                                <td className="py-2 px-3">{h.berawan}%</td>
+                                                <td className="py-2 px-3">{h.hujan}%</td>
+                                            </tr>
+                                        ))
+                                    )}
+                                </tbody>
+                            </table>
+                        </div>
                     </div>
                     <button
                         onClick={handleReport}
