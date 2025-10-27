@@ -293,7 +293,7 @@ export default function Camera() {
                         </div>
                     )}
 
-                    <h2 className="text-xl font-bold mt-2">Hasil Deteksi</h2>
+                    <h2 className="text-xl font-bold mt-2">Hasil Deteksi (Perkiraan 1 Jam kedepan)</h2>
                     <div className="flex justify-center w-full mb-10">
                         <table className="w-full max-w-xl border-collapse rounded-lg overflow-hidden shadow-lg bg-white">
                             <thead>
